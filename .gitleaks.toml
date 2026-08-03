@@ -1,0 +1,4 @@
+title = "e2e-nntp secret scanning policy"
+
+[extend]
+useDefault = true

@@ -1,0 +1,13 @@
+name: dependency-review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/dependency-review-action@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4

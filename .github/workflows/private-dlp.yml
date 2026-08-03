@@ -1,0 +1,33 @@
+name: private-dlp
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  scan-diff:
+    if: vars.PRIVATE_DLP_ENDPOINT != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send pull-request diff to the private DLP service
+        env:
+          DLP_ENDPOINT: ${{ vars.PRIVATE_DLP_ENDPOINT }}
+          DLP_TOKEN: ${{ secrets.PRIVATE_DLP_TOKEN }}
+          EVENT_PATH: ${{ github.event_path }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          pull_number="$(jq -r .number "$EVENT_PATH")"
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header "Accept: application/vnd.github.v3.diff" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/$pull_number" \
+            | curl --fail --silent --show-error \
+                --header "Authorization: Bearer $DLP_TOKEN" \
+                --header "Content-Type: text/x-diff" \
+                --data-binary @- \
+                "$DLP_ENDPOINT"

@@ -1,0 +1,24 @@
+# Generated credentials and local runtime state must never enter source control.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.csr
+data/
+articles/
+certs/
+coverage/
+dist/
+bin/
+tmp/
+*.nzb
+*.nzb.gz
+*.rar
+*.r00
+*.r01
+publiccheck-report.json
+gitleaks-report.json
