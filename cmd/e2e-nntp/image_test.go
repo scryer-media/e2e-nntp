@@ -126,6 +126,9 @@ func TestLocalImageServesNNTP(t *testing.T) {
 	address := strings.TrimSpace(string(portOutput))
 	connection := waitForNNTP(t, address)
 	defer connection.Close()
+	if output, err := exec.Command("docker", "exec", container, "/e2e-nntp", "health", "--addr", "127.0.0.1:119").CombinedOutput(); err != nil {
+		t.Fatalf("run image health check: %v: %s", err, strings.TrimSpace(string(output)))
+	}
 	reader := bufio.NewReader(connection)
 	expectNNTP(t, reader, "200 e2e-nntp ready (posting ok)")
 	writeNNTP(t, connection, "AUTHINFO USER fixture-user")
