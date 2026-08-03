@@ -118,11 +118,15 @@ type Metrics struct {
 	StatCounts         map[string]int `json:"stat_counts"`
 	BodyBytes          uint64         `json:"body_bytes"`
 	BodyTransfers      int64          `json:"body_transfers"`
+	BodyFirstUnixNano  int64          `json:"body_first_unix_nano"`
+	BodyLastUnixNano   int64          `json:"body_last_unix_nano"`
+	StatChaosHits      int            `json:"stat_chaos_hits"`
 	ConnectionAttempts int64          `json:"connection_attempts"`
 	ConnectionAccepted int64          `json:"connection_accepted"`
 	ConnectionRejected int64          `json:"connection_rejected"`
 	ActiveConnections  int64          `json:"active_connections"`
 	PeakConnections    int64          `json:"peak_connections"`
+	ConfiguredLimit    int            `json:"configured_limit"`
 }
 
 func (server *Server) requireTestControl() error {
@@ -160,7 +164,9 @@ func (server *Server) Metrics() (Metrics, error) {
 	if err := server.requireTestControl(); err != nil {
 		return Metrics{}, err
 	}
-	return server.metrics.snapshot(server.activeConnections.Load()), nil
+	metrics := server.metrics.snapshot(server.activeConnections.Load())
+	metrics.ConfiguredLimit = server.currentChaos().MaxConnections
+	return metrics, nil
 }
 
 // DeleteByPrefix removes a stable percentage of matching message IDs.

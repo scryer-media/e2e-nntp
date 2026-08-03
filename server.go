@@ -245,11 +245,13 @@ func (server *Server) handleConnection(connection net.Conn) {
 			messageID := stripBrackets(argument)
 			server.metrics.recordStat(messageID)
 			if server.roll(chaos.StatShortPercent) {
+				server.metrics.recordStatChaos(messageID)
 				writeRaw(writer, []byte("22\r\n"))
 				continue
 			}
 			exists := server.store.exists(messageID)
 			if server.roll(chaos.StatBadCodePercent) {
+				server.metrics.recordStatChaos(messageID)
 				if exists {
 					writeRaw(writer, []byte("2\xff3 0 <"+messageID+">\r\n"))
 				} else {
@@ -485,11 +487,27 @@ func (server *Server) handleMetrics(writer *bufio.Writer, argument string) {
 		var payload any
 		switch strings.ToUpper(fields[0]) {
 		case "BODY":
-			payload = map[string]any{"body_counts": filterCounts(metrics.BodyCounts, prefix), "body_bytes": metrics.BodyBytes, "body_transfers": metrics.BodyTransfers}
+			payload = map[string]any{
+				"body_counts":          filterCounts(metrics.BodyCounts, prefix),
+				"body_bytes":           metrics.BodyBytes,
+				"body_transfers":       metrics.BodyTransfers,
+				"body_first_unix_nano": metrics.BodyFirstUnixNano,
+				"body_last_unix_nano":  metrics.BodyLastUnixNano,
+			}
 		case "STAT":
-			payload = map[string]any{"stat_counts": filterCounts(metrics.StatCounts, prefix)}
+			payload = map[string]any{
+				"stat_counts":     filterCounts(metrics.StatCounts, prefix),
+				"stat_chaos_hits": server.metrics.statChaosHits(prefix),
+			}
 		case "CONNECTIONS":
-			payload = map[string]any{"attempted": metrics.ConnectionAttempts, "accepted": metrics.ConnectionAccepted, "rejected": metrics.ConnectionRejected, "active": metrics.ActiveConnections, "peak_active": metrics.PeakConnections}
+			payload = map[string]any{
+				"attempted":        metrics.ConnectionAttempts,
+				"accepted":         metrics.ConnectionAccepted,
+				"rejected":         metrics.ConnectionRejected,
+				"active":           metrics.ActiveConnections,
+				"peak_active":      metrics.PeakConnections,
+				"configured_limit": metrics.ConfiguredLimit,
+			}
 		}
 		encoded, err := json.Marshal(payload)
 		if err != nil {
