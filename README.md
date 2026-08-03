@@ -82,6 +82,10 @@ Provide the password through a mounted secret file, set
 `NNTP_PASSWORD_FILE` to that file path, and pass `NNTP_ENABLE_TEST_CONTROL=1`
 only to E2E suites that require the synthetic extensions.
 
+The scratch image includes `e2e-nntp health --addr 127.0.0.1:119`, which
+checks only the NNTP greeting and orderly `QUIT` response. Use it as the
+Compose health check; it does not require credentials or test controls.
+
 ## Test controls
 
 Standard NNTP operations are always available. `CHAOS`, `METRICS`, `DELETE`,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/scryer-media/e2e-nntp"
 )
@@ -30,6 +32,8 @@ func main() {
 	switch os.Args[1] {
 	case "serve":
 		serve(os.Args[2:])
+	case "health":
+		health(os.Args[2:])
 	case "image":
 		if len(os.Args) < 3 || os.Args[2] != "build" {
 			fatal(errors.New("usage: e2e-nntp image build [flags]"))
@@ -47,9 +51,10 @@ func printUsage() {
 
 Usage:
   e2e-nntp serve [flags]
+  e2e-nntp health [flags]
   e2e-nntp image build --version vX.Y.Z [flags]
 
-Use e2e-nntp serve --help or e2e-nntp image build --help for details.
+Use e2e-nntp serve --help, e2e-nntp health --help, or e2e-nntp image build --help for details.
 `)
 }
 
@@ -126,6 +131,48 @@ func serve(arguments []string) {
 	if err := server.Close(); err != nil {
 		fatal(err)
 	}
+}
+
+func health(arguments []string) {
+	flags := flag.NewFlagSet("health", flag.ExitOnError)
+	address := flags.String("addr", stringEnvironment("NNTP_HEALTH_ADDR", "127.0.0.1:119"), "NNTP listener address")
+	timeout := flags.Duration("timeout", time.Second, "connection and response timeout")
+	if err := flags.Parse(arguments); err != nil {
+		fatal(err)
+	}
+	if err := checkNNTP(*address, *timeout); err != nil {
+		fatal(err)
+	}
+}
+
+func checkNNTP(address string, timeout time.Duration) error {
+	connection, err := net.DialTimeout("tcp", address, timeout)
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w", address, err)
+	}
+	defer connection.Close()
+	if err := connection.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("set deadline: %w", err)
+	}
+	reader := bufio.NewReader(connection)
+	greeting, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("read greeting: %w", err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(greeting), "200") {
+		return fmt.Errorf("unexpected greeting %q", strings.TrimSpace(greeting))
+	}
+	if _, err := fmt.Fprint(connection, "QUIT\r\n"); err != nil {
+		return fmt.Errorf("write QUIT: %w", err)
+	}
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("read QUIT response: %w", err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(response), "205") {
+		return fmt.Errorf("unexpected QUIT response %q", strings.TrimSpace(response))
+	}
+	return nil
 }
 
 func readPasswordFile(path string) (string, error) {
