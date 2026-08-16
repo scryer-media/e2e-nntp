@@ -128,7 +128,7 @@ func imageSource(workspace string, options imageBuildOptions) (string, string, e
 		}
 		return directory, "devel", nil
 	}
-	goMod := "module local-e2e-nntp-image-build\n\ngo 1.23\n\nrequire " + modulePath + " " + options.Version + "\n"
+	goMod := "module local-e2e-nntp-image-build\n\ngo 1.26.2\n\nrequire " + modulePath + " " + options.Version + "\n"
 	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte(goMod), 0o600); err != nil {
 		return "", "", fmt.Errorf("write temporary module: %w", err)
 	}
