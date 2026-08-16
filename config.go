@@ -3,6 +3,7 @@
 package nntp
 
 import (
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"strings"
@@ -18,6 +19,14 @@ var (
 type Credentials struct {
 	Username string
 	Password string
+}
+
+// matches compares both fields in constant time and only then combines the
+// results, so a rejected login does not reveal which field was wrong.
+func (credentials Credentials) matches(username, password string) bool {
+	usernameMatch := subtle.ConstantTimeCompare([]byte(username), []byte(credentials.Username))
+	passwordMatch := subtle.ConstantTimeCompare([]byte(password), []byte(credentials.Password))
+	return usernameMatch&passwordMatch == 1
 }
 
 // Config controls one independent server instance.

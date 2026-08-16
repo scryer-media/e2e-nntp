@@ -78,7 +78,7 @@ func buildLocalImage(options imageBuildOptions) (imageResult, error) {
 		return imageResult{}, err
 	}
 	binaryPath := filepath.Join(workspace, "e2e-nntp")
-	if err := runBuild(sourceDirectory, binaryPath, operatingSystem, architecture, moduleVersion); err != nil {
+	if err := runBuild(sourceDirectory, binaryPath, operatingSystem, architecture, moduleVersion, options.SourceDirectory == ""); err != nil {
 		return imageResult{}, err
 	}
 	binaryContents, err := os.ReadFile(binaryPath)
@@ -135,9 +135,23 @@ func imageSource(workspace string, options imageBuildOptions) (string, string, e
 	return workspace, options.Version, nil
 }
 
-func runBuild(directory, output, operatingSystem, architecture, moduleVersion string) error {
+func runBuild(directory, output, operatingSystem, architecture, moduleVersion string, temporaryModule bool) error {
 	environment := append(os.Environ(), "CGO_ENABLED=0", "GOOS="+operatingSystem, "GOARCH="+architecture, "GOWORK=off")
-	return runCommand(directory, environment, "go", "build", "-trimpath", "-ldflags", "-X main.version="+moduleVersion, "-o", output, modulePath+"/cmd/e2e-nntp")
+	return runCommand(directory, environment, "go", buildArguments(output, moduleVersion, temporaryModule)...)
+}
+
+// buildArguments returns the `go` argv for the static binary. The temporary
+// module written by imageSource has a require line but no go.sum, and `go
+// build` refuses to resolve that on its own; `-mod=mod` lets it download the
+// pinned version and record the checksums inside the throwaway workspace.
+// A caller-supplied source tree is built read-only so the builder never edits
+// a developer's go.mod or go.sum.
+func buildArguments(output, moduleVersion string, temporaryModule bool) []string {
+	arguments := []string{"build", "-trimpath"}
+	if temporaryModule {
+		arguments = append(arguments, "-mod=mod")
+	}
+	return append(arguments, "-ldflags", "-X main.version="+moduleVersion, "-o", output, modulePath+"/cmd/e2e-nntp")
 }
 
 func runCommand(directory string, environment []string, program string, arguments ...string) error {

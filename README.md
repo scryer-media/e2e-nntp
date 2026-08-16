@@ -93,6 +93,17 @@ Standard NNTP operations are always available. `CHAOS`, `METRICS`, `DELETE`,
 unless `--enable-test-control` is set and require successful NNTP
 authentication. Go callers have equivalent `Server` methods.
 
+## Session limits
+
+Every session line — commands and posted article lines alike — must fit in the
+64 KiB session buffer. A longer line is answered with `501 Line too long` (or
+`441 Posting failed` mid-article) and the session is closed, so a client that
+never sends a terminator cannot make the server buffer an unbounded amount of
+data before authenticating. NNTP commands are limited to 512 octets and
+article lines to 1,000, so conforming clients never reach the cap. There is no
+idle timeout and no article-size limit for authenticated posters; keep the
+listener on a private test network as [SECURITY.md](SECURITY.md) describes.
+
 ## Public-surface policy
 
 Every retained commit is treated as public. Run the generic scanner before

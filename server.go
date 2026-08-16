@@ -202,8 +202,11 @@ func (server *Server) handleConnection(connection net.Conn) {
 	pendingUser := ""
 	reauthRequired := false
 	for {
-		line, err := reader.ReadString('\n')
+		line, err := readLine(reader)
 		if err != nil {
+			if errors.Is(err, errLineTooLong) {
+				writeLine(writer, "501 Line too long")
+			}
 			return
 		}
 		command, argument := splitCommand(line)
@@ -294,7 +297,9 @@ func (server *Server) handleConnection(connection net.Conn) {
 			if !requireAuthentication(writer, authenticated) {
 				continue
 			}
-			server.handlePost(reader, writer)
+			if !server.handlePost(reader, writer) {
+				return
+			}
 		case "CHAOS", "METRICS", "DELETE", "DELETEID", "RELOAD":
 			if !server.config.EnableTestControl {
 				writeLine(writer, "500 Unknown command")
@@ -327,7 +332,7 @@ func (server *Server) handleAuthentication(writer *bufio.Writer, argument, pendi
 			writeLine(writer, "482 Authentication commands issued out of sequence")
 			return pendingUser, authenticated, reauthRequired
 		}
-		if server.roll(chaos.RejectAuthPercent) || pendingUser != server.config.Credentials.Username || value != server.config.Credentials.Password {
+		if server.roll(chaos.RejectAuthPercent) || !server.config.Credentials.matches(pendingUser, value) {
 			writeLine(writer, "481 Authentication failed")
 			return "", false, true
 		}
@@ -389,23 +394,27 @@ func (server *Server) handleArticle(writer *bufio.Writer, messageID string) {
 	writeDotStuffed(writer, article, true)
 }
 
-func (server *Server) handlePost(reader *bufio.Reader, writer *bufio.Writer) {
+// handlePost reads one posted article. It reports false when the session must
+// end: an over-long article line leaves unread bytes in the stream that would
+// otherwise be parsed as commands.
+func (server *Server) handlePost(reader *bufio.Reader, writer *bufio.Writer) bool {
 	writeLine(writer, "340 Send article, end with .")
 	messageID, temporaryPath, _, err := readPostedArticle(reader, server.config.DataDir)
 	if err != nil {
 		writeLine(writer, "441 Posting failed")
-		return
+		return !errors.Is(err, errLineTooLong)
 	}
 	if err := server.store.commit(messageID, temporaryPath); err != nil {
 		_ = os.Remove(temporaryPath)
 		if errors.Is(err, os.ErrExist) {
 			writeLine(writer, "441 Duplicate article")
-			return
+			return true
 		}
 		writeLine(writer, "441 Storage error")
-		return
+		return true
 	}
 	writeLine(writer, "240 Article received")
+	return true
 }
 
 func (server *Server) handleControl(writer *bufio.Writer, command, argument string) {
@@ -546,6 +555,28 @@ func (server *Server) roll(percent int) bool {
 	server.randomMu.Lock()
 	defer server.randomMu.Unlock()
 	return server.random.Intn(100) < percent
+}
+
+// errLineTooLong reports a client line that exceeds the session's read buffer.
+// The buffer is the hard cap on per-line memory: NNTP commands are at most 512
+// octets and article lines at most 1,000, so a longer line is either a broken
+// client or an attempt to make the server buffer an unbounded amount of data
+// before authenticating.
+var errLineTooLong = errors.New("line exceeds maximum length")
+
+// readLine returns the next line including its terminator, or errLineTooLong
+// when the line does not fit in the reader's buffer. Callers close the session
+// on that error; the unread remainder of the line must never be reinterpreted
+// as further commands or article content.
+func readLine(reader *bufio.Reader) (string, error) {
+	line, err := reader.ReadSlice('\n')
+	if err != nil {
+		if errors.Is(err, bufio.ErrBufferFull) {
+			return "", errLineTooLong
+		}
+		return "", err
+	}
+	return string(line), nil
 }
 
 func splitCommand(line string) (string, string) {

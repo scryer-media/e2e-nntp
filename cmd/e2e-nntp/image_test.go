@@ -47,6 +47,23 @@ func TestImageBuildRejectsAmbiguousOrUnpinnedSourcesBeforeDocker(t *testing.T) {
 	}
 }
 
+func TestBuildArgumentsResolveOnlyTheTemporaryModule(t *testing.T) {
+	versioned := strings.Join(buildArguments("/tmp/out", "v0.1.0", true), " ")
+	if !strings.Contains(versioned, " -mod=mod ") {
+		t.Fatalf("temporary-module build must pass -mod=mod so the pinned version can be resolved without a go.sum: %q", versioned)
+	}
+	if !strings.Contains(versioned, "-X main.version=v0.1.0") || !strings.HasSuffix(versioned, modulePath+"/cmd/e2e-nntp") {
+		t.Fatalf("temporary-module build lacks version stamp or target package: %q", versioned)
+	}
+	source := strings.Join(buildArguments("/tmp/out", "devel", false), " ")
+	if strings.Contains(source, "-mod=") {
+		t.Fatalf("source-directory build must not rewrite the developer module: %q", source)
+	}
+	if !strings.Contains(source, "-trimpath") {
+		t.Fatalf("source-directory build lost -trimpath: %q", source)
+	}
+}
+
 func TestImageResultRedactsLocalSourceDirectory(t *testing.T) {
 	if got := imageSourceKind("any-local-directory"); got != "source-directory" {
 		t.Fatalf("unexpected source kind %q", got)

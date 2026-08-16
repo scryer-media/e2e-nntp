@@ -154,7 +154,7 @@ func readPostedArticle(reader *bufio.Reader, directory string) (messageID, tempo
 	var header bytes.Buffer
 	inHeaders := true
 	for {
-		line, readErr := reader.ReadString('\n')
+		line, readErr := readLine(reader)
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
 				return cleanup(errors.New("posting connection ended before terminator"))

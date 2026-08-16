@@ -1,7 +1,7 @@
 # Contributing
 
-This repository is private during development but is designed to become public
-without rewriting its retained history. Treat every commit as public.
+This repository is public and its retained history is never rewritten. Treat
+every commit as public.
 
 Before staging changes:
 
@@ -9,9 +9,12 @@ Before staging changes:
 scripts/install-git-hooks
 go run ./cmd/publiccheck --repo .
 gitleaks protect --staged --redact
+go vet ./...
 go test -race ./...
 ```
 
 Use synthetic test values only. Never add a provider account, local host or
 user name, private address, source capture, generated certificate, or secret.
-The final public-transition audit scans all reachable refs, not only `main`.
+CI re-runs the public-surface audit over all reachable refs, not only `main`,
+so a finding in an earlier commit fails the build even after it is removed
+from the tip.

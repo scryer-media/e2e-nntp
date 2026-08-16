@@ -126,6 +126,86 @@ func TestTestControlIsOptInAndAuthenticated(t *testing.T) {
 	}
 }
 
+func TestOverlongLineClosesSessionBeforeAuthentication(t *testing.T) {
+	server := startFixtureServer(t, Config{DataDir: t.TempDir(), ListenAddr: "127.0.0.1:0", Credentials: Credentials{Username: fixtureUsername, Password: fixturePassword}})
+	client := dialFixtureClient(t, server.PlaintextAddr())
+	// An unauthenticated client streams a command line larger than the
+	// session read buffer. The server must answer once and drop the session
+	// instead of buffering the line indefinitely.
+	oversized := "AUTHINFO USER " + strings.Repeat("x", 2*64*1024)
+	if _, err := fmt.Fprint(client, oversized); err != nil {
+		t.Fatalf("write oversized line: %v", err)
+	}
+	expectClientLine(t, client, "501 Line too long")
+	fixture := client.(*fixtureConnection)
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if line, err := fixture.reader.ReadString('\n'); err == nil {
+		t.Fatalf("session stayed open after an over-long line and answered %q", strings.TrimSpace(line))
+	}
+	_ = client.Close()
+
+	// A well-formed session on the same server is unaffected.
+	client = dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, client)
+	closeFixtureClient(t, client)
+}
+
+func TestOverlongPostedLineDoesNotDesynchronizeCommands(t *testing.T) {
+	server := startFixtureServer(t, Config{DataDir: t.TempDir(), ListenAddr: "127.0.0.1:0", Credentials: Credentials{Username: fixtureUsername, Password: fixturePassword}})
+	client := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, client)
+	writeClientLine(t, client, "POST")
+	expectClientLine(t, client, "340 Send article, end with .")
+	writeClientLine(t, client, "Message-ID: <oversized@example.test>")
+	writeClientLine(t, client, "")
+	// The tail of the over-long body line spells a command. If the server kept
+	// the session and resumed reading mid-line, that tail would execute.
+	if _, err := fmt.Fprint(client, strings.Repeat("y", 2*64*1024)+"\r\nQUIT\r\n"); err != nil {
+		t.Fatalf("write oversized article line: %v", err)
+	}
+	expectClientLine(t, client, "441 Posting failed")
+	fixture := client.(*fixtureConnection)
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if line, err := fixture.reader.ReadString('\n'); err == nil {
+		t.Fatalf("server kept reading after an over-long article line and answered %q", strings.TrimSpace(line))
+	}
+	_ = client.Close()
+	if server.store.count() != 0 {
+		t.Fatalf("over-long article was stored: %d articles", server.store.count())
+	}
+	entries, err := os.ReadDir(server.config.DataDir)
+	if err != nil {
+		t.Fatalf("read data directory: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".incoming-") {
+			t.Fatalf("temporary article %s was left behind", entry.Name())
+		}
+	}
+}
+
+func TestCredentialsMatchRequiresBothFields(t *testing.T) {
+	credentials := Credentials{Username: fixtureUsername, Password: fixturePassword}
+	if !credentials.matches(fixtureUsername, fixturePassword) {
+		t.Fatal("exact credentials were rejected")
+	}
+	for _, attempt := range [][2]string{
+		{fixtureUsername, "wrong"},
+		{"wrong", fixturePassword},
+		{"", ""},
+		{fixtureUsername + "x", fixturePassword},
+		{fixtureUsername, fixturePassword + "x"},
+	} {
+		if credentials.matches(attempt[0], attempt[1]) {
+			t.Fatalf("credentials %q/%q were accepted", attempt[0], attempt[1])
+		}
+	}
+}
+
 func startFixtureServer(t *testing.T, config Config) *Server {
 	t.Helper()
 	context, cancel := context.WithCancel(context.Background())
