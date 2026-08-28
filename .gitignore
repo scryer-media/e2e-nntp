@@ -22,3 +22,4 @@ tmp/
 *.r01
 publiccheck-report.json
 gitleaks-report.json
+.DS_Store
