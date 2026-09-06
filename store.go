@@ -221,6 +221,21 @@ func articleBody(article []byte) []byte {
 	return article
 }
 
+// articleHeaders is the HEAD counterpart of articleBody: the stored header
+// block when the article carries one, otherwise a synthesized Message-ID
+// header so body-only fixtures still answer HEAD the way a real server does.
+func articleHeaders(messageID string, article []byte) []byte {
+	trimmed := bytes.TrimLeft(article, "\r\n")
+	if !bytes.HasPrefix(trimmed, []byte("=ybegin")) {
+		for _, separator := range [][]byte{[]byte("\r\n\r\n"), []byte("\n\n")} {
+			if split := bytes.Index(article, separator); split >= 0 && looksLikeHeaders(article[:split]) {
+				return article[:split]
+			}
+		}
+	}
+	return []byte("Message-ID: <" + messageID + ">")
+}
+
 func looksLikeHeaders(block []byte) bool {
 	for _, line := range bytes.Split(block, []byte("\n")) {
 		lower := strings.ToLower(strings.TrimSpace(strings.TrimRight(string(line), "\r")))

@@ -47,6 +47,13 @@ func TestServerPostsRetrievesAndReloadsArticles(t *testing.T) {
 	expectClientLine(t, client, "first line")
 	expectClientLine(t, client, "..dot-prefixed")
 	expectClientLine(t, client, ".")
+	writeClientLine(t, client, "HEAD <fixture-article@example.test>")
+	expectClientLine(t, client, "221 0 <fixture-article@example.test>")
+	expectClientLine(t, client, "Message-ID: <fixture-article@example.test>")
+	expectClientLine(t, client, "Subject: fixture")
+	expectClientLine(t, client, ".")
+	writeClientLine(t, client, "HEAD <missing-article@example.test>")
+	expectClientLine(t, client, "430 No such article")
 	closeFixtureClient(t, client)
 	if err := server.Close(); err != nil {
 		t.Fatalf("close first server: %v", err)
@@ -57,6 +64,36 @@ func TestServerPostsRetrievesAndReloadsArticles(t *testing.T) {
 	authenticateFixtureClient(t, client)
 	writeClientLine(t, client, "STAT <fixture-article@example.test>")
 	expectClientLine(t, client, "223 0 <fixture-article@example.test>")
+}
+
+func TestHeadSynthesizesMessageIDForBodyOnlyArticles(t *testing.T) {
+	directory := t.TempDir()
+	server := startFixtureServer(t, Config{DataDir: directory, ListenAddr: "127.0.0.1:0", Credentials: Credentials{Username: fixtureUsername, Password: fixturePassword}})
+	client := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, client)
+	writeClientLine(t, client, "POST")
+	expectClientLine(t, client, "340 Send article, end with .")
+	for _, line := range []string{
+		"Message-ID: <body-only@example.test>",
+		"",
+		"=ybegin line=128 size=3 name=file.bin",
+		"abc",
+		"=yend size=3",
+		".",
+	} {
+		writeClientLine(t, client, line)
+	}
+	expectClientLine(t, client, "240 Article received")
+
+	writeClientLine(t, client, "HEAD <body-only@example.test>")
+	expectClientLine(t, client, "221 0 <body-only@example.test>")
+	expectClientLine(t, client, "Message-ID: <body-only@example.test>")
+	expectClientLine(t, client, ".")
+	closeFixtureClient(t, client)
+
+	if got := string(articleHeaders("bare@example.test", []byte("=ybegin line=128 size=3 name=file.bin\r\nabc\r\n=yend size=3"))); got != "Message-ID: <bare@example.test>" {
+		t.Fatalf("articleHeaders on a bare yEnc body = %q", got)
+	}
 }
 
 func TestTLSGeneratedMaterialIsPersistentAndTrusted(t *testing.T) {

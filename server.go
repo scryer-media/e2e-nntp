@@ -267,6 +267,11 @@ func (server *Server) handleConnection(connection net.Conn) {
 			} else {
 				writeLine(writer, "430 No such article")
 			}
+		case "HEAD":
+			if !requireAuthentication(writer, authenticated) {
+				continue
+			}
+			server.handleHead(writer, stripBrackets(argument))
 		case "BODY":
 			if !requireAuthentication(writer, authenticated) {
 				continue
@@ -382,6 +387,19 @@ func (server *Server) handleBody(writer *bufio.Writer, messageID string, chaos C
 		writeLine(writer, ".")
 	}
 	server.metrics.recordBody(messageID, len(body))
+}
+
+// handleHead answers HEAD with the article's header block only. Weaver's
+// health probe re-checks every STAT miss with HEAD, so a server that answers
+// 500 here turns every probe on a job with a missing article inconclusive.
+func (server *Server) handleHead(writer *bufio.Writer, messageID string) {
+	article, exists := server.store.load(messageID)
+	if !exists {
+		writeLine(writer, "430 No such article")
+		return
+	}
+	writeLine(writer, "221 0 <"+messageID+">")
+	writeDotStuffed(writer, articleHeaders(messageID, article), true)
 }
 
 func (server *Server) handleArticle(writer *bufio.Writer, messageID string) {
