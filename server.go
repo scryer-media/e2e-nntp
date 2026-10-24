@@ -371,10 +371,16 @@ func (server *Server) handleBody(writer *bufio.Writer, messageID string, chaos C
 		server.metrics.recordBody(messageID, len(body))
 		return
 	}
-	// The stored body ends in a newline; the fast path drops that empty last
-	// element too, so the per-line path serves the same lines it does.
-	lines := strings.Split(strings.TrimSuffix(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n"), "\n")
+	// Split the way writeDotStuffed does, so the per-line path serves exactly
+	// the lines the fast path serves: the empty element after the final
+	// newline is dropped (an empty body serves no lines), and each line loses
+	// its carriage return.
+	lines := strings.Split(string(body), "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 	for _, line := range lines {
+		line = strings.TrimSuffix(line, "\r")
 		if chaos.HoldBodyLines > 0 {
 			if released := server.spendHoldLine(); released != nil {
 				select {

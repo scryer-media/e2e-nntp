@@ -291,6 +291,114 @@ func TestHoldBodyBlocksPastItsBudgetUntilTheHoldIsLifted(t *testing.T) {
 	closeFixtureClient(t, control)
 }
 
+func TestHeldBodyServesTheBytesAnUnheldBodyServes(t *testing.T) {
+	server := startFixtureServer(t, Config{DataDir: t.TempDir(), ListenAddr: "127.0.0.1:0", Credentials: Credentials{Username: fixtureUsername, Password: fixturePassword}, EnableTestControl: true})
+	client := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, client)
+	control := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, control)
+	articles := map[string][]string{
+		"stuffed@example.test": {"..leading dot", "plain", "", "=yend size=3"},
+		"empty@example.test":   {},
+	}
+	for messageID, body := range articles {
+		writeClientLine(t, client, "POST")
+		expectClientLine(t, client, "340 Send article, end with .")
+		for _, line := range append([]string{"Message-ID: <" + messageID + ">", ""}, body...) {
+			writeClientLine(t, client, line)
+		}
+		writeClientLine(t, client, ".")
+		expectClientLine(t, client, "240 Article received")
+	}
+	transfers := int64(0)
+	for _, messageID := range []string{"stuffed@example.test", "empty@example.test"} {
+		writeClientLine(t, client, "BODY <"+messageID+">")
+		unheld := readClientBody(t, client)
+		transfers++
+		expectBodyTransfers(t, server, transfers)
+
+		// A release with no body blocked leaves nothing armed, and the next
+		// hold arms afresh: the held fetch below blocks on the new hold.
+		writeClientLine(t, control, "CHAOS hold_body=2")
+		expectClientLine(t, control, "290 Chaos mode updated")
+		writeClientLine(t, control, "CHAOS off")
+		expectClientLine(t, control, "290 Chaos mode updated")
+		writeClientLine(t, control, "CHAOS hold_body=1")
+		expectClientLine(t, control, "290 Chaos mode updated")
+		writeClientLine(t, client, "BODY <"+messageID+">")
+		var held []string
+		if len(unheld) > 2 {
+			// The status line and one body line fit the budget; the rest of
+			// the body waits for the release.
+			held = append(held, readClientLine(t, client), readClientLine(t, client))
+			expectBodyTransfers(t, server, transfers)
+			writeClientLine(t, control, "CHAOS off")
+			expectClientLine(t, control, "290 Chaos mode updated")
+		} else {
+			// An empty body has no line to hold, so it completes at once.
+			writeClientLine(t, control, "CHAOS off")
+			expectClientLine(t, control, "290 Chaos mode updated")
+		}
+		held = append(held, readClientBody(t, client)...)
+		transfers++
+		expectBodyTransfers(t, server, transfers)
+		if strings.Join(held, "\n") != strings.Join(unheld, "\n") {
+			t.Fatalf("held body %q differs from unheld body %q", held, unheld)
+		}
+	}
+	closeFixtureClient(t, client)
+	closeFixtureClient(t, control)
+}
+
+func TestCloseReturnsWhileABodyIsHeld(t *testing.T) {
+	server := startFixtureServer(t, Config{DataDir: t.TempDir(), ListenAddr: "127.0.0.1:0", Credentials: Credentials{Username: fixtureUsername, Password: fixturePassword}, EnableTestControl: true})
+	client := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, client)
+	writeClientLine(t, client, "POST")
+	expectClientLine(t, client, "340 Send article, end with .")
+	for _, line := range []string{"Message-ID: <closed@example.test>", "", "one", "two", "."} {
+		writeClientLine(t, client, line)
+	}
+	expectClientLine(t, client, "240 Article received")
+	writeClientLine(t, client, "CHAOS hold_body=1")
+	expectClientLine(t, client, "290 Chaos mode updated")
+	writeClientLine(t, client, "BODY <closed@example.test>")
+	expectClientLine(t, client, "222 0 <closed@example.test>")
+	expectClientLine(t, client, "one")
+	// Close waits for every session goroutine, so it returns only if the held
+	// body gives up its wait when the server closes.
+	if err := server.Close(); err != nil {
+		t.Fatalf("close server: %v", err)
+	}
+	expectBodyTransfers(t, server, 0)
+}
+
+// readClientBody reads response lines up to and including the terminator.
+func readClientBody(t *testing.T, connection net.Conn) []string {
+	t.Helper()
+	var lines []string
+	for {
+		line := readClientLine(t, connection)
+		lines = append(lines, line)
+		if line == "." {
+			return lines
+		}
+	}
+}
+
+func readClientLine(t *testing.T, connection net.Conn) string {
+	t.Helper()
+	fixture, ok := connection.(*fixtureConnection)
+	if !ok {
+		t.Fatal("fixture connection reader is missing")
+	}
+	line, err := fixture.reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read client line: %v", err)
+	}
+	return strings.TrimRight(line, "\r\n")
+}
+
 // expectBodyTransfers reads the completed-body counter the server increments
 // only after a body's terminator. A body blocked on the hold cannot move it,
 // so the counter proves a body has not completed without waiting on a clock.
