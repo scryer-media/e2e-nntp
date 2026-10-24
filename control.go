@@ -24,6 +24,11 @@ type ChaosConfig struct {
 	BadTermPercent       int
 	StatBadCodePercent   int
 	StatShortPercent     int
+	// HoldBodyLines arms a hold: the server serves this many more body lines
+	// after the configuration takes effect, then every BODY response blocks
+	// before its next line until a configuration without a hold replaces this
+	// one. The held bodies then finish normally. Zero means no hold.
+	HoldBodyLines int
 }
 
 // Validate rejects impossible synthetic control settings.
@@ -52,6 +57,9 @@ func (config ChaosConfig) Validate() error {
 	}
 	if config.MaxConnections < 0 {
 		return errors.New("max_conns must not be negative")
+	}
+	if config.HoldBodyLines < 0 {
+		return errors.New("hold_body must not be negative")
 	}
 	return nil
 }
@@ -102,6 +110,8 @@ func ParseChaos(value string) (ChaosConfig, error) {
 			config.StatBadCodePercent = parsed
 		case "stat_short":
 			config.StatShortPercent = parsed
+		case "hold_body":
+			config.HoldBodyLines = parsed
 		default:
 			return ChaosConfig{}, fmt.Errorf("unknown chaos option %q", name)
 		}
@@ -145,7 +155,7 @@ func (server *Server) SetChaos(config ChaosConfig) error {
 		return err
 	}
 	server.chaosMu.Lock()
-	server.chaos = config
+	server.setChaosLocked(config)
 	server.chaosMu.Unlock()
 	return nil
 }

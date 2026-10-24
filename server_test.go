@@ -243,6 +243,68 @@ func TestCredentialsMatchRequiresBothFields(t *testing.T) {
 	}
 }
 
+func TestHoldBodyBlocksPastItsBudgetUntilTheHoldIsLifted(t *testing.T) {
+	if _, err := ParseChaos("hold_body=-1"); err == nil {
+		t.Fatal("a negative hold_body was accepted")
+	}
+	server := startFixtureServer(t, Config{DataDir: t.TempDir(), ListenAddr: "127.0.0.1:0", Credentials: Credentials{Username: fixtureUsername, Password: fixturePassword}, EnableTestControl: true})
+	client := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, client)
+	for _, messageID := range []string{"held-first@example.test", "held-second@example.test"} {
+		writeClientLine(t, client, "POST")
+		expectClientLine(t, client, "340 Send article, end with .")
+		for _, line := range []string{"Message-ID: <" + messageID + ">", "", "one", "two", "three", "."} {
+			writeClientLine(t, client, line)
+		}
+		expectClientLine(t, client, "240 Article received")
+	}
+	control := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, control)
+	writeClientLine(t, control, "CHAOS hold_body=4")
+	expectClientLine(t, control, "290 Chaos mode updated")
+
+	// The budget spans bodies: the first article's three lines fit in it and
+	// the body completes, the second article gets the fourth line and then
+	// blocks before its next one.
+	writeClientLine(t, client, "BODY <held-first@example.test>")
+	for _, expected := range []string{"222 0 <held-first@example.test>", "one", "two", "three", "."} {
+		expectClientLine(t, client, expected)
+	}
+	writeClientLine(t, client, "BODY <held-second@example.test>")
+	expectClientLine(t, client, "222 0 <held-second@example.test>")
+	expectClientLine(t, client, "one")
+	expectBodyTransfers(t, server, 1)
+
+	// A configuration that keeps a hold does not release the held body.
+	writeClientLine(t, control, "CHAOS hold_body=1")
+	expectClientLine(t, control, "290 Chaos mode updated")
+	expectBodyTransfers(t, server, 1)
+
+	// One without a hold releases it, and the body finishes normally.
+	writeClientLine(t, control, "CHAOS off")
+	expectClientLine(t, control, "290 Chaos mode updated")
+	for _, expected := range []string{"two", "three", "."} {
+		expectClientLine(t, client, expected)
+	}
+	expectBodyTransfers(t, server, 2)
+	closeFixtureClient(t, client)
+	closeFixtureClient(t, control)
+}
+
+// expectBodyTransfers reads the completed-body counter the server increments
+// only after a body's terminator. A body blocked on the hold cannot move it,
+// so the counter proves a body has not completed without waiting on a clock.
+func expectBodyTransfers(t *testing.T, server *Server, expected int64) {
+	t.Helper()
+	metrics, err := server.Metrics()
+	if err != nil {
+		t.Fatalf("read metrics: %v", err)
+	}
+	if metrics.BodyTransfers != expected {
+		t.Fatalf("completed bodies = %d, want %d", metrics.BodyTransfers, expected)
+	}
+}
+
 func startFixtureServer(t *testing.T, config Config) *Server {
 	t.Helper()
 	context, cancel := context.WithCancel(context.Background())

@@ -34,9 +34,15 @@ type Server struct {
 	activeConnections atomic.Int64
 	chaosMu           sync.RWMutex
 	chaos             ChaosConfig
-	randomMu          sync.Mutex
-	random            *rand.Rand
-	metrics           metricState
+	// holdRemaining and holdReleased are the armed hold, guarded by chaosMu.
+	// holdReleased is closed when a configuration without a hold replaces the
+	// one that armed it, which releases every body blocked on it at once; it
+	// is nil whenever no hold is armed.
+	holdRemaining int
+	holdReleased  chan struct{}
+	randomMu      sync.Mutex
+	random        *rand.Rand
+	metrics       metricState
 }
 
 // Start binds configured listeners and serves until Close or context
@@ -59,9 +65,9 @@ func Start(ctx context.Context, config Config) (*Server, error) {
 		store:     store,
 		plaintext: plaintext,
 		closed:    make(chan struct{}),
-		chaos:     config.Chaos,
 		random:    rand.New(rand.NewSource(config.ChaosSeed)),
 	}
+	server.setChaosLocked(config.Chaos)
 	server.metrics.reset(0)
 	if config.TLS.ListenAddr != "" {
 		tlsConfig, caPath, tlsErr := config.TLS.load()
@@ -360,13 +366,24 @@ func (server *Server) handleBody(writer *bufio.Writer, messageID string, chaos C
 		body = corrupt(body, server)
 	}
 	writeLine(writer, "222 0 <"+messageID+">")
-	if chaos.SlowBodyMilliseconds == 0 && chaos.DropMidBodyPercent == 0 && chaos.BadTermPercent == 0 && chaos.SplitTermPercent == 0 {
+	if chaos.SlowBodyMilliseconds == 0 && chaos.HoldBodyLines == 0 && chaos.DropMidBodyPercent == 0 && chaos.BadTermPercent == 0 && chaos.SplitTermPercent == 0 {
 		writeDotStuffed(writer, body, true)
 		server.metrics.recordBody(messageID, len(body))
 		return
 	}
-	lines := strings.Split(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n")
+	// The stored body ends in a newline; the fast path drops that empty last
+	// element too, so the per-line path serves the same lines it does.
+	lines := strings.Split(strings.TrimSuffix(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n"), "\n")
 	for _, line := range lines {
+		if chaos.HoldBodyLines > 0 {
+			if released := server.spendHoldLine(); released != nil {
+				select {
+				case <-released:
+				case <-server.closed:
+					return
+				}
+			}
+		}
 		if chaos.SlowBodyMilliseconds > 0 {
 			time.Sleep(time.Duration(chaos.SlowBodyMilliseconds) * time.Millisecond)
 		}
@@ -561,6 +578,39 @@ func (server *Server) currentChaos() ChaosConfig {
 	server.chaosMu.RLock()
 	defer server.chaosMu.RUnlock()
 	return server.chaos
+}
+
+// setChaosLocked installs a configuration and arms or releases the body hold
+// with it. The caller holds chaosMu.
+func (server *Server) setChaosLocked(config ChaosConfig) {
+	server.chaos = config
+	if config.HoldBodyLines > 0 {
+		server.holdRemaining = config.HoldBodyLines
+		if server.holdReleased == nil {
+			server.holdReleased = make(chan struct{})
+		}
+		return
+	}
+	server.holdRemaining = 0
+	if server.holdReleased != nil {
+		close(server.holdReleased)
+		server.holdReleased = nil
+	}
+}
+
+// spendHoldLine spends one body line of the armed hold. It returns nil when
+// the line may go out, and otherwise the channel the hold's release closes.
+func (server *Server) spendHoldLine() <-chan struct{} {
+	server.chaosMu.Lock()
+	defer server.chaosMu.Unlock()
+	if server.holdReleased == nil {
+		return nil
+	}
+	if server.holdRemaining > 0 {
+		server.holdRemaining--
+		return nil
+	}
+	return server.holdReleased
 }
 
 func (server *Server) roll(percent int) bool {
