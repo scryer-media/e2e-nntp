@@ -32,8 +32,13 @@ type Server struct {
 	clients   sync.Map
 
 	activeConnections atomic.Int64
-	chaosMu           sync.RWMutex
-	chaos             ChaosConfig
+	// sessions counts the connections that are NNTP sessions: every one
+	// except a control channel, which says MODE CONTROL as its first command.
+	// It is what the active and peak counters report, so a harness reading
+	// them over its own connection is not among what it reads.
+	sessions atomic.Int64
+	chaosMu  sync.RWMutex
+	chaos    ChaosConfig
 	// holdRemaining and holdReleased are the armed hold, guarded by chaosMu.
 	// holdReleased is closed when a configuration without a hold replaces the
 	// one that armed it, which releases every body blocked on it at once; it
@@ -190,7 +195,6 @@ func (server *Server) handleConnection(connection net.Conn) {
 		return
 	}
 	server.metrics.accepted.Add(1)
-	server.metrics.recordPeak(active)
 	if server.roll(chaos.Greet400Percent) {
 		writeLine(writer, "400 service temporarily unavailable")
 		return
@@ -207,6 +211,7 @@ func (server *Server) handleConnection(connection net.Conn) {
 	authenticated := false
 	pendingUser := ""
 	reauthRequired := false
+	classified, control := false, false
 	for {
 		line, err := readLine(reader)
 		if err != nil {
@@ -216,6 +221,14 @@ func (server *Server) handleConnection(connection net.Conn) {
 			return
 		}
 		command, argument := splitCommand(line)
+		if !classified {
+			classified = true
+			control = isControlDeclaration(command, argument)
+			if !control {
+				server.metrics.recordPeak(server.sessions.Add(1))
+				defer server.sessions.Add(-1)
+			}
+		}
 		chaos = server.currentChaos()
 		switch command {
 		case "CAPABILITIES":
@@ -229,6 +242,10 @@ func (server *Server) handleConnection(connection net.Conn) {
 			writeLine(writer, "POST")
 			writeLine(writer, ".")
 		case "MODE":
+			if control && isControlDeclaration(command, argument) {
+				writeLine(writer, "200 Control channel, not counted as a session")
+				continue
+			}
 			writeLine(writer, "200 Reader mode acknowledged")
 		case "AUTHINFO":
 			pendingUser, authenticated, reauthRequired = server.handleAuthentication(writer, argument, pendingUser, authenticated, reauthRequired, chaos)
@@ -324,6 +341,12 @@ func (server *Server) handleConnection(connection net.Conn) {
 			writeLine(writer, "500 Unknown command")
 		}
 	}
+}
+
+// isControlDeclaration reports a connection's MODE CONTROL, which only counts
+// when it is the connection's first command.
+func isControlDeclaration(command, argument string) bool {
+	return command == "MODE" && strings.EqualFold(strings.TrimSpace(argument), "CONTROL")
 }
 
 func (server *Server) handleAuthentication(writer *bufio.Writer, argument, pendingUser string, authenticated, reauthRequired bool, chaos ChaosConfig) (string, bool, bool) {

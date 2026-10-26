@@ -165,7 +165,7 @@ func (server *Server) ResetMetrics() error {
 	if err := server.requireTestControl(); err != nil {
 		return err
 	}
-	server.metrics.reset(server.activeConnections.Load())
+	server.metrics.reset(server.sessions.Load())
 	return nil
 }
 
@@ -174,7 +174,7 @@ func (server *Server) Metrics() (Metrics, error) {
 	if err := server.requireTestControl(); err != nil {
 		return Metrics{}, err
 	}
-	metrics := server.metrics.snapshot(server.activeConnections.Load())
+	metrics := server.metrics.snapshot(server.sessions.Load())
 	metrics.ConfiguredLimit = server.currentChaos().MaxConnections
 	return metrics, nil
 }

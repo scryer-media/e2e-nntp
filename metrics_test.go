@@ -44,3 +44,41 @@ func TestMetricsExposeConfiguredConnectionLimit(t *testing.T) {
 		t.Fatalf("configured limit = %d", metrics.ConfiguredLimit)
 	}
 }
+
+// A connection whose first command is MODE CONTROL is the harness reading or
+// steering the server, so the active and peak counters leave it out; every
+// other connection is a session from its first command.
+func TestControlChannelIsNotCountedAsASession(t *testing.T) {
+	server := startFixtureServer(t, Config{
+		DataDir:           t.TempDir(),
+		ListenAddr:        "127.0.0.1:0",
+		Credentials:       Credentials{Username: fixtureUsername, Password: fixturePassword},
+		EnableTestControl: true,
+	})
+	session := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, session)
+
+	control := dialFixtureClient(t, server.PlaintextAddr())
+	writeClientLine(t, control, "MODE CONTROL")
+	expectClientLine(t, control, "200 Control channel, not counted as a session")
+	authenticateFixtureClient(t, control)
+	writeClientLine(t, control, "METRICS RESET")
+	expectClientLine(t, control, "290 Metrics reset")
+
+	// A MODE CONTROL after a session's first command leaves it counted.
+	late := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, late)
+	writeClientLine(t, late, "MODE CONTROL")
+	expectClientLine(t, late, "200 Reader mode acknowledged")
+
+	metrics, err := server.Metrics()
+	if err != nil {
+		t.Fatalf("read metrics: %v", err)
+	}
+	if metrics.ActiveConnections != 2 || metrics.PeakConnections != 2 {
+		t.Fatalf("active = %d, peak = %d, want the two sessions only", metrics.ActiveConnections, metrics.PeakConnections)
+	}
+	closeFixtureClient(t, late)
+	closeFixtureClient(t, control)
+	closeFixtureClient(t, session)
+}
