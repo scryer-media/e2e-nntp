@@ -29,6 +29,12 @@ type ChaosConfig struct {
 	// before its next line until a configuration without a hold replaces this
 	// one. The held bodies then finish normally. Zero means no hold.
 	HoldBodyLines int
+	// HoldMessageIDs holds the bodies of these articles only: a BODY for one
+	// of them answers its status line and then blocks before its first body
+	// line until a configuration that does not name the ID replaces this one.
+	// IDs match with or without angle brackets. Every other article is served
+	// as the rest of the configuration says.
+	HoldMessageIDs []string
 }
 
 // Validate rejects impossible synthetic control settings.
@@ -61,6 +67,11 @@ func (config ChaosConfig) Validate() error {
 	if config.HoldBodyLines < 0 {
 		return errors.New("hold_body must not be negative")
 	}
+	for _, messageID := range config.HoldMessageIDs {
+		if stripBrackets(messageID) == "" {
+			return errors.New("hold_ids must not name an empty message ID")
+		}
+	}
 	return nil
 }
 
@@ -76,6 +87,14 @@ func ParseChaos(value string) (ChaosConfig, error) {
 		name, rawValue, found := strings.Cut(strings.TrimSpace(part), "=")
 		if !found || strings.TrimSpace(name) == "" {
 			return ChaosConfig{}, fmt.Errorf("invalid chaos option %q", part)
+		}
+		name = strings.TrimSpace(name)
+		if name == "hold_ids" {
+			// IDs are separated by semicolons, since commas separate options.
+			for _, messageID := range strings.Split(rawValue, ";") {
+				config.HoldMessageIDs = append(config.HoldMessageIDs, stripBrackets(messageID))
+			}
+			continue
 		}
 		parsed, err := strconv.Atoi(strings.TrimSpace(rawValue))
 		if err != nil {

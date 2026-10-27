@@ -389,6 +389,13 @@ func (server *Server) handleBody(writer *bufio.Writer, messageID string, chaos C
 		body = corrupt(body, server)
 	}
 	writeLine(writer, "222 0 <"+messageID+">")
+	if released := server.heldBody(messageID); released != nil {
+		select {
+		case <-released:
+		case <-server.closed:
+			return
+		}
+	}
 	if chaos.SlowBodyMilliseconds == 0 && chaos.HoldBodyLines == 0 && chaos.DropMidBodyPercent == 0 && chaos.BadTermPercent == 0 && chaos.SplitTermPercent == 0 {
 		writeDotStuffed(writer, body, true)
 		server.metrics.recordBody(messageID, len(body))
@@ -609,22 +616,59 @@ func (server *Server) currentChaos() ChaosConfig {
 	return server.chaos
 }
 
-// setChaosLocked installs a configuration and arms or releases the body hold
-// with it. The caller holds chaosMu.
+// setChaosLocked installs a configuration and arms or releases the holds
+// with it. The caller holds chaosMu. Both kinds of hold share one released
+// channel: it is closed when the new configuration drops hold_body or stops
+// naming an ID the old one held, which releases every held body at once, and
+// a fresh channel is armed if the new configuration still holds anything.
 func (server *Server) setChaosLocked(config ChaosConfig) {
+	previous := server.chaos
+	config.HoldMessageIDs = append([]string(nil), config.HoldMessageIDs...)
 	server.chaos = config
-	if config.HoldBodyLines > 0 {
-		server.holdRemaining = config.HoldBodyLines
+	dropped := previous.HoldBodyLines > 0 && config.HoldBodyLines == 0
+	for _, messageID := range previous.HoldMessageIDs {
+		if !config.holdsMessageID(messageID) {
+			dropped = true
+			break
+		}
+	}
+	if dropped && server.holdReleased != nil {
+		close(server.holdReleased)
+		server.holdReleased = nil
+	}
+	server.holdRemaining = config.HoldBodyLines
+	if config.HoldBodyLines > 0 || len(config.HoldMessageIDs) > 0 {
 		if server.holdReleased == nil {
 			server.holdReleased = make(chan struct{})
 		}
 		return
 	}
-	server.holdRemaining = 0
 	if server.holdReleased != nil {
 		close(server.holdReleased)
 		server.holdReleased = nil
 	}
+}
+
+// holdsMessageID reports whether the configuration holds this article's body.
+func (config ChaosConfig) holdsMessageID(messageID string) bool {
+	messageID = stripBrackets(messageID)
+	for _, held := range config.HoldMessageIDs {
+		if stripBrackets(held) == messageID {
+			return true
+		}
+	}
+	return false
+}
+
+// heldBody returns the channel a held article's body waits on, or nil when
+// the live configuration does not hold this article.
+func (server *Server) heldBody(messageID string) <-chan struct{} {
+	server.chaosMu.RLock()
+	defer server.chaosMu.RUnlock()
+	if server.holdReleased == nil || !server.chaos.holdsMessageID(messageID) {
+		return nil
+	}
+	return server.holdReleased
 }
 
 // spendHoldLine spends one body line of the armed hold. It returns nil when

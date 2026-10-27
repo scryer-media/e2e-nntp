@@ -350,6 +350,110 @@ func TestHeldBodyServesTheBytesAnUnheldBodyServes(t *testing.T) {
 	closeFixtureClient(t, control)
 }
 
+func TestParseHoldIDs(t *testing.T) {
+	config, err := ParseChaos("hold_ids=<first@example.test>;second@example.test, slow_body=1")
+	if err != nil {
+		t.Fatalf("parse hold_ids: %v", err)
+	}
+	if strings.Join(config.HoldMessageIDs, ";") != "first@example.test;second@example.test" || config.SlowBodyMilliseconds != 1 {
+		t.Fatalf("parsed %+v", config)
+	}
+	for _, messageID := range []string{"<first@example.test>", "first@example.test", "second@example.test"} {
+		if !config.holdsMessageID(messageID) {
+			t.Fatalf("%s is not held", messageID)
+		}
+	}
+	if config.holdsMessageID("third@example.test") {
+		t.Fatal("an unnamed article is held")
+	}
+	for _, value := range []string{"hold_ids=", "hold_ids=<>", "hold_ids=a@example.test;;b@example.test", "hold_ids=a@example.test;"} {
+		if _, err := ParseChaos(value); err == nil {
+			t.Fatalf("%q was accepted", value)
+		}
+	}
+	if err := (ChaosConfig{HoldMessageIDs: []string{" "}}).Validate(); err == nil {
+		t.Fatal("a blank held ID was accepted")
+	}
+}
+
+func TestHoldIDsHoldOnlyTheNamedBodyUntilAConfigDropsIt(t *testing.T) {
+	server := startFixtureServer(t, Config{DataDir: t.TempDir(), ListenAddr: "127.0.0.1:0", Credentials: Credentials{Username: fixtureUsername, Password: fixturePassword}, EnableTestControl: true})
+	held := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, held)
+	postFixtureArticles(t, held, "named@example.test", "other@example.test")
+	free := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, free)
+	control := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, control)
+	writeClientLine(t, control, "CHAOS hold_ids=<named@example.test>")
+	expectClientLine(t, control, "290 Chaos mode updated")
+
+	writeClientLine(t, held, "BODY <named@example.test>")
+	expectClientLine(t, held, "222 0 <named@example.test>")
+	// STAT and HEAD for the held article, and another article's BODY, are
+	// served meanwhile on another connection.
+	writeClientLine(t, free, "STAT <named@example.test>")
+	expectClientLine(t, free, "223 0 <named@example.test>")
+	writeClientLine(t, free, "HEAD <named@example.test>")
+	readClientBody(t, free)
+	writeClientLine(t, free, "BODY <other@example.test>")
+	for _, expected := range []string{"222 0 <other@example.test>", "one", "two", "."} {
+		expectClientLine(t, free, expected)
+	}
+	expectBodyTransfers(t, server, 1)
+
+	// A configuration that still names the ID keeps the body held.
+	writeClientLine(t, control, "CHAOS hold_ids=named@example.test;other@example.test,slow_body=0")
+	expectClientLine(t, control, "290 Chaos mode updated")
+	expectBodyTransfers(t, server, 1)
+
+	// One that does not name it releases the body, which finishes normally.
+	writeClientLine(t, control, "CHAOS hold_ids=other@example.test")
+	expectClientLine(t, control, "290 Chaos mode updated")
+	for _, expected := range []string{"one", "two", "."} {
+		expectClientLine(t, held, expected)
+	}
+	expectBodyTransfers(t, server, 2)
+	closeFixtureClient(t, held)
+	closeFixtureClient(t, free)
+	closeFixtureClient(t, control)
+}
+
+func TestChaosOffReleasesAHeldID(t *testing.T) {
+	server := startFixtureServer(t, Config{DataDir: t.TempDir(), ListenAddr: "127.0.0.1:0", Credentials: Credentials{Username: fixtureUsername, Password: fixturePassword}, EnableTestControl: true})
+	client := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, client)
+	postFixtureArticles(t, client, "named@example.test")
+	control := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, control)
+	writeClientLine(t, control, "CHAOS hold_ids=named@example.test")
+	expectClientLine(t, control, "290 Chaos mode updated")
+	writeClientLine(t, client, "BODY named@example.test")
+	expectClientLine(t, client, "222 0 <named@example.test>")
+	expectBodyTransfers(t, server, 0)
+	writeClientLine(t, control, "CHAOS off")
+	expectClientLine(t, control, "290 Chaos mode updated")
+	for _, expected := range []string{"one", "two", "."} {
+		expectClientLine(t, client, expected)
+	}
+	expectBodyTransfers(t, server, 1)
+	closeFixtureClient(t, client)
+	closeFixtureClient(t, control)
+}
+
+// postFixtureArticles posts one two-line article per message ID.
+func postFixtureArticles(t *testing.T, connection net.Conn, messageIDs ...string) {
+	t.Helper()
+	for _, messageID := range messageIDs {
+		writeClientLine(t, connection, "POST")
+		expectClientLine(t, connection, "340 Send article, end with .")
+		for _, line := range []string{"Message-ID: <" + messageID + ">", "", "one", "two", "."} {
+			writeClientLine(t, connection, line)
+		}
+		expectClientLine(t, connection, "240 Article received")
+	}
+}
+
 func TestCloseReturnsWhileABodyIsHeld(t *testing.T) {
 	server := startFixtureServer(t, Config{DataDir: t.TempDir(), ListenAddr: "127.0.0.1:0", Credentials: Credentials{Username: fixtureUsername, Password: fixturePassword}, EnableTestControl: true})
 	client := dialFixtureClient(t, server.PlaintextAddr())

@@ -93,6 +93,12 @@ Standard NNTP operations are always available. `CHAOS`, `METRICS`, `DELETE`,
 unless `--enable-test-control` is set and require successful NNTP
 authentication. Go callers have equivalent `Server` methods.
 
+`CHAOS hold_body=<lines>` serves that many more body lines, then blocks every
+`BODY` before its next line until a configuration without a hold arrives.
+`CHAOS hold_ids=<id1>;<id2>` blocks only the named articles' `BODY` after the
+`222` line; a configuration that no longer names an ID, or `CHAOS off`,
+releases every held body.
+
 ## Session limits
 
 Every session line — commands and posted article lines alike — must fit in the
