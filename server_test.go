@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -474,6 +476,32 @@ func TestCloseReturnsWhileABodyIsHeld(t *testing.T) {
 	if err := server.Close(); err != nil {
 		t.Fatalf("close server: %v", err)
 	}
+	expectBodyTransfers(t, server, 0)
+}
+
+func TestDropMidBodyClosesTheConnection(t *testing.T) {
+	server := startFixtureServer(t, Config{DataDir: t.TempDir(), ListenAddr: "127.0.0.1:0", Credentials: Credentials{Username: fixtureUsername, Password: fixturePassword}, EnableTestControl: true})
+	client := dialFixtureClient(t, server.PlaintextAddr())
+	authenticateFixtureClient(t, client)
+	writeClientLine(t, client, "POST")
+	expectClientLine(t, client, "340 Send article, end with .")
+	for _, line := range []string{"Message-ID: <dropped@example.test>", "", "one", "two", "."} {
+		writeClientLine(t, client, line)
+	}
+	expectClientLine(t, client, "240 Article received")
+	writeClientLine(t, client, "CHAOS drop_mid_body=100")
+	expectClientLine(t, client, "290 Chaos mode updated")
+	writeClientLine(t, client, "BODY <dropped@example.test>")
+	expectClientLine(t, client, "222 0 <dropped@example.test>")
+	expectClientLine(t, client, "one")
+	// A real server that drops a body mid-transfer loses the connection: the
+	// client reads EOF where the rest of the body and its terminator would be,
+	// and the session answers nothing further.
+	fixture := client.(*fixtureConnection)
+	if line, err := fixture.reader.ReadString('\n'); !errors.Is(err, io.EOF) || line != "" {
+		t.Fatalf("after a mid-body drop the client read %q (%v), want EOF", line, err)
+	}
+	_ = client.Close()
 	expectBodyTransfers(t, server, 0)
 }
 

@@ -315,7 +315,9 @@ func (server *Server) handleConnection(connection net.Conn) {
 				time.Sleep(90 * time.Second)
 				return
 			}
-			server.handleBody(writer, stripBrackets(argument), chaos)
+			if !server.handleBody(writer, stripBrackets(argument), chaos) {
+				return
+			}
 		case "ARTICLE":
 			if !requireAuthentication(writer, authenticated) {
 				continue
@@ -378,11 +380,15 @@ func (server *Server) handleAuthentication(writer *bufio.Writer, argument, pendi
 	}
 }
 
-func (server *Server) handleBody(writer *bufio.Writer, messageID string, chaos ChaosConfig) {
+// handleBody serves one BODY. It reports false when the session must end: a
+// body dropped mid-transfer leaves an unterminated reply on the wire, so the
+// connection closes the way a real server's does, and a server shutting down
+// ends the session it interrupted.
+func (server *Server) handleBody(writer *bufio.Writer, messageID string, chaos ChaosConfig) bool {
 	article, exists := server.store.load(messageID)
 	if !exists {
 		writeLine(writer, "430 No such article")
-		return
+		return true
 	}
 	body := articleBody(article)
 	if server.roll(chaos.CorruptBodyPercent) {
@@ -393,13 +399,13 @@ func (server *Server) handleBody(writer *bufio.Writer, messageID string, chaos C
 		select {
 		case <-released:
 		case <-server.closed:
-			return
+			return false
 		}
 	}
 	if chaos.SlowBodyMilliseconds == 0 && chaos.HoldBodyLines == 0 && chaos.DropMidBodyPercent == 0 && chaos.BadTermPercent == 0 && chaos.SplitTermPercent == 0 {
 		writeDotStuffed(writer, body, true)
 		server.metrics.recordBody(messageID, len(body))
-		return
+		return true
 	}
 	// Split the way writeDotStuffed does, so the per-line path serves exactly
 	// the lines the fast path serves: the empty element after the final
@@ -416,7 +422,7 @@ func (server *Server) handleBody(writer *bufio.Writer, messageID string, chaos C
 				select {
 				case <-released:
 				case <-server.closed:
-					return
+					return false
 				}
 			}
 		}
@@ -425,12 +431,12 @@ func (server *Server) handleBody(writer *bufio.Writer, messageID string, chaos C
 		}
 		writeLine(writer, dotStuff(line))
 		if server.roll(chaos.DropMidBodyPercent) {
-			return
+			return false
 		}
 	}
 	if server.roll(chaos.BadTermPercent) {
 		writeRaw(writer, []byte(".\r"))
-		return
+		return true
 	}
 	if server.roll(chaos.SplitTermPercent) {
 		writeRaw(writer, []byte("."))
@@ -440,6 +446,7 @@ func (server *Server) handleBody(writer *bufio.Writer, messageID string, chaos C
 		writeLine(writer, ".")
 	}
 	server.metrics.recordBody(messageID, len(body))
+	return true
 }
 
 // handleHead answers HEAD with the article's header block only. Weaver's
